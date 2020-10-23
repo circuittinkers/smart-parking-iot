@@ -1,0 +1,17 @@
+{
+	"WINDOW_WIDTH": 500,
+	"WINDOW_HEIGHT": 300,
+	"APP_TITLE": "SMART PARKING SYSTEM",
+	"APP_INSTRUCTION": "Click on the text button below\nand scan your RFid tag.",
+	"APP_CREDIT": "Design by Ahmad Syauqi",
+	"APP_THANKYOU": "Thank you for your visit",
+	"SPACE_MAX": 3,
+	"RFID_LEN": 10,
+	"FARE_MIN": 0,
+	"FARE_STANDARD": 3,
+	"FARE_MAX": 72,
+	"GPIO_IR1": 17,
+	"GPIO_IR2": 27,
+	"GPIO_IR3": 22,
+	"GPIO_IR4": 23
+}
