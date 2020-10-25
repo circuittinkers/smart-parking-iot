@@ -3,11 +3,15 @@ from guizero import App, Box, Text, TextBox, PushButton, warn
 import argparse
 import warnings
 import time
+import copy
 import datetime
 import csv
 import json
 import uuid
 import math
+import dweepy
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 uid = 0
 currentRFid = None
@@ -16,16 +20,56 @@ RecordFile = 'record_db.csv'
 RFidField = ['Id', 'RFid', 'User', 'Status', 'Last_Session_Id']
 RecordField = ['Id','Date','Session_Id','RFid','Time_In','Time_Out','Fare']
 sensorStatus = []
+lastSensor = []
+currentRecord = []
+lastRecord = []
+
+def syncData():
+    global lastSensor, lastRecord
+    # syncing data to cloud
+    isSync = False
+    # in order to prevent dweet limits, sync only happens if there is new update
+    if lastSensor != sensorStatus:
+        appendSensor = {}
+        dataSync.value = "Syncing..."
+        print("[MAIN/SYNC] Syncing space to freeboard.io [1/2]")
+        # deep copy sensorStatus to lastSensor for next sync
+        lastSensor = copy.deepcopy(sensorStatus)
+        for sensor in sensorStatus:
+            appendSensor[str(sensor['SensorId'])] = sensor['Status']
+        print("appendSensor = "+str(appendSensor))
+        dweepy.dweet_for(conf['DWEET_KEY'],appendSensor)
+        isSync = True
+    else:
+        print("[MAIN/SYNC] Skipped sync to freeboard.io [1/2]")
+    # check if any new record, if there is append them
+    if lastRecord != currentRecord:
+        dataSync.value = "Syncing..."
+        lastRecord = copy.deepcopy(currentRecord)
+        print("[MAIN/SYNC] Syncing record to google sheet [2/2]")
+        if isAuth:
+            spreadsheet = client.open('Smart Parking System (Record)')
+
+            with open(RecordFile, 'r') as file_obj:
+                content = file_obj.read()
+                client.import_csv(spreadsheet.id, data=content)
+        else:
+            print("[MAIN/SYNC] No authorization to update google sheet. Please check")
+        isSync = True
+    else:
+        print("[MAIN/SYNC] Skipped sync to google sheet [2/2]")
+    if isSync:
+        dataSync.value = ""
 
 def checkParking():
-    global occupancy, sensorStatus
+    global occupancy, sensorStatus, isParkingUpdate
     # checking available parking slot
     for sensor in sensorIr:
         if not GPIO.input(sensor):
             for status in sensorStatus:
                 if status['SensorId'] == sensor:
-                    if status['Status'] == "Available":
-                        status['Status'] = "Occupied"
+                    if status['Status'] == 1:
+                        status['Status'] = 0
                         occupancy-=1
                         print("Sensor status: "+str(sensorStatus))
                         carLeft.after(3000, updateParking)
@@ -33,8 +77,8 @@ def checkParking():
         else:
             for status in sensorStatus:
                 if status['SensorId'] == sensor:
-                    if status['Status'] == "Occupied":
-                        status['Status'] = "Available"
+                    if status['Status'] == 0:
+                        status['Status'] = 1
                         occupancy+=1
                         print("Sensor status: "+str(sensorStatus))
                         carLeft.after(1000, updateParking)
@@ -95,7 +139,6 @@ def checkRFidTag():
                     print("[GUI] Welcome " + row["User"])
                     rfidStatus.value = "Welcome " + row["User"]
                     currentRFid = tagId
-                    # rfidStatus.after(5000, clearDisplay)
                 uid+=1
             
             time.sleep(1)
@@ -120,8 +163,6 @@ def checkRFidTag():
                                 key['Status'] = 'Out'
                                 rfidTimeIn.value = "Time in: "+timeIn
                                 rfidTimeOut.value = "Time out: None"
-                                # occupancy is not monitored via checkin/out. it should be from detecting i/o
-                                # occupancy-=1
                             # else, find the latest session id and estimate the fare
                             elif key['Status'] == 'Out':
                                 print("[MAIN] User checking out...")
@@ -133,7 +174,6 @@ def checkRFidTag():
                                     rfidFare.value = "Fare: RM"+str(fare)
                                     rfidTQ.value = conf['APP_THANKYOU']
                                     key['Status'] = 'In'
-                                    # occupancy+=1
                             rfidStatus.after(5000, clearDisplay)
                         statusUpdate.writerow(key)
         
@@ -174,13 +214,13 @@ def RFidCheckIn(bufferData):
     return currentDate + " " + currentTime
 
 def RFidCheckOut(sessionId):
+    global currentRecord
     lookId = sessionId
     currentTs = time.localtime()
     currentDate = time.strftime("%d/%m/%Y", currentTs)
     currentTime = time.strftime("%H:%M:%S", currentTs)
     
     # read the latest local report
-    tempData = []
     previousDate = None
     previousTime = None
     isIdFound = False
@@ -188,7 +228,7 @@ def RFidCheckOut(sessionId):
     with open(RecordFile) as comparefile:
         compare = csv.DictReader(comparefile)
         for row in compare:
-            tempData.append(row)
+            currentRecord.append(row)
             if row['Session_Id'] == lookId:
                 previousDate = row['Date']
                 previousTime = row['Time_In']
@@ -201,7 +241,7 @@ def RFidCheckOut(sessionId):
             recordUpdate = csv.DictWriter(updatefile, fieldnames=RecordField)
                     
             recordUpdate.writeheader()
-            for key in tempData:
+            for key in currentRecord:
                 if key['Session_Id'] == lookId:
                     print("[MAIN/OUT] Updating local record...")
                     key['Time_Out'] = currentTime
@@ -253,6 +293,11 @@ warnings.filterwarnings("ignore")
 conf = json.load(open(args["conf"]))
 
 # init car occupancy value
+# (IMPORTANT #1) If you need to add more sensor, please add them to conf.json
+# with their gpio pin(s) and update the names here in sensorIr.
+# Kindly use the same name for ease
+# (IMPORTANT #2) Then, increase the SPACE_MAX in conf.json to increase the max
+# number of parking
 occupancy = conf["SPACE_MAX"]
 sensorIr = [conf['GPIO_IR1'],conf['GPIO_IR2'],conf['GPIO_IR3']]
 
@@ -271,14 +316,34 @@ except:
     print("[MAIN/WARN] "+RecordFile+" does not exist. Generating...")
     makeFile(RecordFile, RecordField)
     
+finally:
+    # fetch latest local record to cache/temp variable
+    with open(RecordFile) as fetchRecord:
+        fetch = csv.DictReader(fetchRecord)
+        for row in fetch:
+            currentRecord.append(row)
+    
 # init and connecting sensors
 GPIO.setmode(GPIO.BCM)
 for sensor in sensorIr:
-    sensorStatus.append({'SensorId':sensor, 'Status':"Available"})
+    sensorStatus.append({'SensorId':sensor, 'Status':1})
     GPIO.setup(sensor,GPIO.IN)
 
 print("[MAIN/INFO] IR sensor ready...")
 print("Sensors: "+str(sensorStatus))
+
+# init and connecting google sheet api
+scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets',
+         "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
+isAuth = False
+try:
+    credentials = ServiceAccountCredentials.from_json_keyfile_name('gs_client_secret.json', scope)
+    isAuth = True
+except:
+    print("[MAIN/WARN] Failed to init Google Service Account. Please ensure that gs_client_secret.json is present!")
+
+if isAuth:
+    client = gspread.authorize(credentials)
 
 # app gui setup
 app = App(title=conf["APP_TITLE"], width=conf["WINDOW_WIDTH"], height=conf["WINDOW_HEIGHT"], layout="auto", bg="white")
@@ -302,6 +367,8 @@ rfidStatus.repeat(1000, checkRFidTag)
 designBy = Text(app, text=conf["APP_CREDIT"],align="bottom")
 carLeft = Text(app, text="There are "+str(occupancy)+"/"+str(conf["SPACE_MAX"])+" parking space left.", align="bottom")
 carLeft.repeat(1000, checkParking)
+dataSync = Text(app, text="")
+dataSync.repeat((conf['SYNC_SEC']*1000), syncData)
 
 rfidText.focus()
 app.display()
