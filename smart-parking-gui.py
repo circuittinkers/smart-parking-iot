@@ -71,7 +71,7 @@ def checkParking():
                     if status['Status'] == 1:
                         status['Status'] = 0
                         occupancy-=1
-                        print("Sensor status: "+str(sensorStatus))
+                        print("[MAIN/PARKING] Sensor status: "+str(sensorStatus))
                         carLeft.after(3000, updateParking)
                         sensorUpdate = True
             
@@ -81,7 +81,7 @@ def checkParking():
                     if status['Status'] == 0:
                         status['Status'] = 1
                         occupancy+=1
-                        print("Sensor status: "+str(sensorStatus))
+                        print("[MAIN/PARKING] Sensor status: "+str(sensorStatus))
                         carLeft.after(1000, updateParking)
                         sensorUpdate = True
             
@@ -171,7 +171,7 @@ def checkRFidTag():
                             # else, find the latest session id and estimate the fare
                             elif key['Status'] == 'Out':
                                 print("[MAIN/INFO] User checking out...")
-                                fare, duration, timeOut = RFidCheckOut(key['Last_Session_Id'])
+                                fare, duration, timeIn, timeOut = RFidCheckOut(key['Last_Session_Id'])
                                 if fare != None:                                    
                                     print("[MAIN/INFO] User has spent "+str(duration)+" minutes. The fare is RM"+str(fare))
                                     rfidTimeIn.value = "Time in: "+timeIn
@@ -255,7 +255,7 @@ def RFidCheckOut(sessionId):
                     key['Fare'] = fare
                 recordUpdate.writerow(key)
             localUpdate = True
-        return fare, duration, (currentDate+" "+currentTime)
+        return fare, duration,(previousDate+" "+previousTime), (currentDate+" "+currentTime)
     return None, None, ""
 
 def getDuration(lastDate, lastTime, nowDate, nowTime):
@@ -331,7 +331,7 @@ for sensor in sensorIr:
     GPIO.setup(sensor,GPIO.IN)
 
 print("[MAIN/INFO] IR sensor ready...")
-print("Sensors: "+str(sensorStatus))
+print("[MAIN/INFO] Available sensors: "+str(sensorStatus))
 
 # init and connecting google sheet api
 scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets',
