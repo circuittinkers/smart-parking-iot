@@ -20,32 +20,31 @@ RecordFile = 'record_db.csv'
 RFidField = ['Id', 'RFid', 'User', 'Status', 'Last_Session_Id']
 RecordField = ['Id','Date','Session_Id','RFid','Time_In','Time_Out','Fare']
 sensorStatus = []
-lastSensor = []
 currentRecord = []
-lastRecord = []
+sensorUpdate = True
+localUpdate = True
 
 def syncData():
-    global lastSensor, lastRecord
+    global sensorUpdate, localUpdate
     # syncing data to cloud
     isSync = False
     # in order to prevent dweet limits, sync only happens if there is new update
-    if lastSensor != sensorStatus:
+    if sensorUpdate:
         appendSensor = {}
         dataSync.value = "Syncing..."
         print("[MAIN/SYNC] Syncing space to freeboard.io [1/2]")
         # deep copy sensorStatus to lastSensor for next sync
-        lastSensor = copy.deepcopy(sensorStatus)
         for sensor in sensorStatus:
             appendSensor[str(sensor['SensorId'])] = sensor['Status']
         print("appendSensor = "+str(appendSensor))
         dweepy.dweet_for(conf['DWEET_KEY'],appendSensor)
+        sensorUpdate = False
         isSync = True
     else:
         print("[MAIN/SYNC] Skipped sync to freeboard.io [1/2]")
     # check if any new record, if there is append them
-    if lastRecord != currentRecord:
+    if localUpdate:
         dataSync.value = "Syncing..."
-        lastRecord = copy.deepcopy(currentRecord)
         print("[MAIN/SYNC] Syncing record to google sheet [2/2]")
         if isAuth:
             spreadsheet = client.open('Smart Parking System (Record)')
@@ -56,13 +55,14 @@ def syncData():
         else:
             print("[MAIN/SYNC] No authorization to update google sheet. Please check")
         isSync = True
+        localUpdate = False
     else:
         print("[MAIN/SYNC] Skipped sync to google sheet [2/2]")
     if isSync:
         dataSync.value = ""
 
 def checkParking():
-    global occupancy, sensorStatus, isParkingUpdate
+    global occupancy, sensorStatus, sensorUpdate
     # checking available parking slot
     for sensor in sensorIr:
         if not GPIO.input(sensor):
@@ -73,6 +73,7 @@ def checkParking():
                         occupancy-=1
                         print("Sensor status: "+str(sensorStatus))
                         carLeft.after(3000, updateParking)
+                        sensorUpdate = True
             
         else:
             for status in sensorStatus:
@@ -82,6 +83,7 @@ def checkParking():
                         occupancy+=1
                         print("Sensor status: "+str(sensorStatus))
                         carLeft.after(1000, updateParking)
+                        sensorUpdate = True
             
 def updateParking():
     global occupancy
@@ -92,15 +94,16 @@ def makeFile(filename, fieldnames):
         prepfile = csv.DictWriter(newfile, fieldnames=fieldnames)
         
         prepfile.writeheader()
-        print("[MAIN] "+filename+" prepared.")
+        print("[MAIN/MAKE] "+filename+" prepared.")
 def createId(tagId):
     global uid, RFidField
+    # check if length of the tag is same as in config
     if(tagId!= "" and len(tagId)==conf["RFID_LEN"]):
         updateName = app.question("Info","Owner of this RFid tag?")
         if(updateName != None and updateName != ""):
             with open('rfid_db.csv', 'a', newline='') as newid:
                 updatefile = csv.DictWriter(newid, fieldnames=RFidField)
-                updatefile.writerow({'Id':str(uid),'RFid':str(tagId),'User':updateName, 'Status':'In', 'Last_Session_Id': 'None'})
+                updatefile.writerow({'Id':str(uid),'RFid':"RF"+str(tagId),'User':updateName, 'Status':'In', 'Last_Session_Id': 'None'})
         print("[MAIN/CREATE] Successfully created Id "+tagId)
         uid = 0
         rfidStatus.value = "Success! Please try again."
@@ -124,9 +127,10 @@ def checkRFidTag():
     global uid, currentRFid, occupancy
     # get rfidText value from text box
     tagId = rfidText.value
+    tagLabel = "RF"+tagId
     if tagId != "" and len(tagId)==conf["RFID_LEN"]:
         RFidRegistered = False
-        print("[MAIN] Retrieved RFID Serial: "+tagId)
+        print("[MAIN/INFO] Retrieved RFID Serial: "+tagId)
 
         temp = []
         currentRFid = None
@@ -134,18 +138,19 @@ def checkRFidTag():
             reader = csv.DictReader(csvfile)                
             for row in reader:
                 temp.append(row)
-                if row["RFid"] == tagId:
+                # "RF"+str(tagId) to 
+                if row["RFid"] == tagLabel:
                     RFidRegistered = True
                     print("[GUI] Welcome " + row["User"])
                     rfidStatus.value = "Welcome " + row["User"]
-                    currentRFid = tagId
+                    currentRFid = tagLabel
                 uid+=1
             
             time.sleep(1)
             if currentRFid != None:
                 timeIn = ""
                 timeOut = ""
-                print("[MAIN] Updating user status for "+currentRFid)
+                print("[MAIN/INFO] Updating user status for "+currentRFid)
                 with open(RFidFile, 'w', newline='') as statusfile:
                     statusUpdate = csv.DictWriter(statusfile, fieldnames=RFidField)
                     
@@ -155,8 +160,8 @@ def checkRFidTag():
                             # if status is In, generate new session id (using uuid4)
                             if key['Status'] == 'In':
                                 sessionId = str(uuid.uuid4().hex)
-                                print("[MAIN] User checking in...")
-                                print("[MAIN] Updating user with session id: "+sessionId)
+                                print("[MAIN/INFO] User checking in...")
+                                print("[MAIN/INFO] Updating user with session id: "+sessionId)
                                 key['Last_Session_Id'] = sessionId
                                 bufferIn = [key['RFid'], sessionId]
                                 timeIn = RFidCheckIn(bufferIn)
@@ -165,10 +170,10 @@ def checkRFidTag():
                                 rfidTimeOut.value = "Time out: None"
                             # else, find the latest session id and estimate the fare
                             elif key['Status'] == 'Out':
-                                print("[MAIN] User checking out...")
+                                print("[MAIN/INFO] User checking out...")
                                 fare, duration, timeOut = RFidCheckOut(key['Last_Session_Id'])
                                 if fare != None:                                    
-                                    print("[MAIN] User has spent "+str(duration)+" minutes. The fare is RM"+str(fare))
+                                    print("[MAIN/INFO] User has spent "+str(duration)+" minutes. The fare is RM"+str(fare))
                                     rfidTimeIn.value = "Time in: "+timeIn
                                     rfidTimeOut.value = "Time out: "+timeOut
                                     rfidFare.value = "Fare: RM"+str(fare)
@@ -178,7 +183,7 @@ def checkRFidTag():
                         statusUpdate.writerow(key)
         
         if not RFidRegistered:
-            print("[MAIN] RFid tag is not registered")
+            print("[MAIN/WARN] RFid tag is not registered")
             rfidStatus.value = "RFid tag does not exist."
             # request adding to database
             rfidStatus.cancel(checkRFidTag)
@@ -195,13 +200,13 @@ def checkRFidTag():
             rfidStatus.cancel(checkRFidTag)
             
 def RFidCheckIn(bufferData):
+    global localUpdate
     generateRFid = bufferData[0]
     generateId = bufferData[1]
     currentTs = time.localtime()
     currentDate = time.strftime("%d/%m/%Y", currentTs)
     currentTime = time.strftime("%H:%M:%S", currentTs)
-    print("[MAIN/IN] Today is: "+currentDate)
-    print("[MAIN/IN] Now is: "+currentTime)
+    print("[MAIN/IN] Today is: "+currentDate+" / Now is: "+currentTime)
     
     # read the latest local record
     with open(RecordFile) as recordread:
@@ -210,11 +215,12 @@ def RFidCheckIn(bufferData):
     print("[MAIN/IN] Appending latest local record")
     with open(RecordFile, 'a', newline='') as recordfile:
         record = csv.DictWriter(recordfile, fieldnames=RecordField)
-        record.writerow({'Id':str(uid),'Date':currentDate,'Session_Id':generateId,'RFid':generateRFid, 'Time_In':currentTime, 'Time_Out': 'None','Fare':'None'})       
+        record.writerow({'Id':str(uid),'Date':currentDate,'Session_Id':generateId,'RFid':generateRFid, 'Time_In':currentTime, 'Time_Out': 'None','Fare':'None'})
+        localUpdate = True
     return currentDate + " " + currentTime
 
 def RFidCheckOut(sessionId):
-    global currentRecord
+    global currentRecord, localUpdate
     lookId = sessionId
     currentTs = time.localtime()
     currentDate = time.strftime("%d/%m/%Y", currentTs)
@@ -224,6 +230,7 @@ def RFidCheckOut(sessionId):
     previousDate = None
     previousTime = None
     isIdFound = False
+    currentRecord.clear()
     print("[MAIN/OUT] Fetching latest local record")
     with open(RecordFile) as comparefile:
         compare = csv.DictReader(comparefile)
@@ -247,6 +254,7 @@ def RFidCheckOut(sessionId):
                     key['Time_Out'] = currentTime
                     key['Fare'] = fare
                 recordUpdate.writerow(key)
+            localUpdate = True
         return fare, duration, (currentDate+" "+currentTime)
     return None, None, ""
 
@@ -315,13 +323,6 @@ try:
 except:
     print("[MAIN/WARN] "+RecordFile+" does not exist. Generating...")
     makeFile(RecordFile, RecordField)
-    
-finally:
-    # fetch latest local record to cache/temp variable
-    with open(RecordFile) as fetchRecord:
-        fetch = csv.DictReader(fetchRecord)
-        for row in fetch:
-            currentRecord.append(row)
     
 # init and connecting sensors
 GPIO.setmode(GPIO.BCM)
